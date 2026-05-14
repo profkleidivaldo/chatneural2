@@ -25,7 +25,7 @@ html,body{width:100%;height:100%;overflow:hidden;background:var(--bg);
 
 canvas{position:fixed;inset:0;width:100%;height:100%;display:block;cursor:crosshair;z-index:0}
 
-/* ── STATUS — canto superior direito ── */
+/* ── STATUS ── */
 #status{
   position:fixed;top:clamp(12px,3vw,22px);right:clamp(12px,3vw,22px);
   z-index:20;pointer-events:none;display:flex;align-items:center;gap:7px}
@@ -38,7 +38,7 @@ canvas{position:fixed;inset:0;width:100%;height:100%;display:block;cursor:crossh
 #stxt{font-size:10px;letter-spacing:.12em;color:var(--muted);text-transform:uppercase}
 @keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}
 
-/* ── LEGENDA frase atual — canto superior esquerdo ── */
+/* ── LEGENDA ── */
 #plbl{
   position:fixed;top:clamp(12px,3vw,22px);left:clamp(12px,3vw,22px);
   z-index:20;pointer-events:none;
@@ -47,6 +47,15 @@ canvas{position:fixed;inset:0;width:100%;height:100%;display:block;cursor:crossh
   color:rgba(110,231,247,.45);letter-spacing:.04em;word-break:break-word;
   opacity:0;transition:opacity .3s}
 #plbl.show{opacity:1}
+
+/* ── BADGE VOZ ── */
+#vbadge{
+  position:fixed;bottom:clamp(84px,16vh,116px);
+  right:clamp(12px,3vw,22px);
+  z-index:20;pointer-events:none;
+  font-size:9px;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--muted);opacity:0;transition:opacity .5s}
+#vbadge.show{opacity:1}
 
 /* ── WAVEFORM ── */
 #wave{
@@ -59,8 +68,7 @@ canvas{position:fixed;inset:0;width:100%;height:100%;display:block;cursor:crossh
 #wave.on{opacity:1}
 #wave span{
   display:block;width:3px;min-height:4px;border-radius:2px;
-  transform-origin:bottom center;
-  background:var(--accent)}
+  transform-origin:bottom center;background:var(--accent)}
 #wave.thinking span{background:var(--accent2)}
 #wave.speaking  span{background:var(--ok)}
 @keyframes bar{0%,100%{transform:scaleY(.1)}50%{transform:scaleY(1)}}
@@ -84,8 +92,7 @@ textarea{
   font-size:clamp(12px,1.35vw,14px);line-height:1.55;
   padding:12px 15px;resize:none;outline:none;
   min-height:48px;max-height:clamp(80px,18vh,130px);
-  overflow-y:auto;
-  transition:border-color .2s,box-shadow .2s}
+  overflow-y:auto;transition:border-color .2s,box-shadow .2s}
 textarea::placeholder{color:var(--muted)}
 textarea:focus{border-color:rgba(110,231,247,.22);box-shadow:0 0 0 2px rgba(110,231,247,.05)}
 button#send{
@@ -113,8 +120,9 @@ button#stop svg{width:18px;height:18px;pointer-events:none}
 <body>
 
 <canvas id="c"></canvas>
-<div id="status"><div id="dot"></div><span id="stxt">pronto</span></div>
+<div id="status"><div id="dot"></div><span id="stxt">carregando voz…</span></div>
 <div id="plbl"></div>
+<div id="vbadge"></div>
 
 <div id="wave">
   <span></span><span></span><span></span><span></span><span></span>
@@ -129,7 +137,7 @@ button#stop svg{width:18px;height:18px;pointer-events:none}
     <button id="stop" aria-label="Parar fala">
       <svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
     </button>
-    <button id="send" aria-label="Enviar">
+    <button id="send" aria-label="Enviar" disabled>
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
            stroke-linecap="round" stroke-linejoin="round">
         <line x1="22" y1="2" x2="11" y2="13"/>
@@ -150,8 +158,117 @@ import {RenderPass}      from 'three/addons/postprocessing/RenderPass.js';
 import {UnrealBloomPass} from 'three/addons/postprocessing/UnrealBloomPass.js';
 import {OutputPass}      from 'three/addons/postprocessing/OutputPass.js';
 
-/* ══════ 🔑 URL DO SEU APPS SCRIPT ══════ */
-const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbza0urqWm1mNPy4yRNcir7eYOvMiUC9kDAF3F4lmfh42s6mu85_mFDE9ORyb8VtVY4DKw/exec";
+/* ══════ URL DO APPS SCRIPT ══════ */
+const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzZGH6QfO8H1lksyvgVrIcMZ2MeE8HQQCrKJj8ND1VkzrLzzFWFOxrulZqHmUHR1QxNFw/exec";
+
+/* ══════════════════════════════════════════════════════════════
+   SISTEMA DE VOZ — seleciona a melhor voz Neural masculina pt-BR
+   Prioridade:
+   1. Microsoft Antonio Online (Edge/Chrome Windows) ← mais grave
+   2. Microsoft Francisco Online (Edge/Chrome Windows)
+   3. Google português Brasil (Chrome Android/Desktop)
+   4. Qualquer voz Neural online pt-BR
+   5. Qualquer voz pt-BR como fallback
+══════════════════════════════════════════════════════════════ */
+let chosenVoice   = null;
+let voiceReady    = false;
+let voiceName     = '';
+
+// Ordem de preferência — nomes exatos como o Chrome/Edge expõe
+const VOICE_PRIORITY = [
+  // Microsoft Neural — Windows/Chrome/Edge
+  'Microsoft Antonio Online (Natural) - Portuguese (Brazil)',
+  'Microsoft Francisco Online (Natural) - Portuguese (Brazil)',
+  'Microsoft Daniel Online (Natural) - Portuguese (Brazil)',
+  // Versões curtas (alguns sistemas omitem o sufixo longo)
+  'Microsoft Antonio Online',
+  'Microsoft Francisco Online',
+  'Microsoft Daniel Online',
+  // Google Neural — Android / ChromeOS
+  'Google português Brasil',
+  'Google Portuguese Brazil',
+];
+
+// Keywords para detectar vozes Neural (online) como fallback
+const NEURAL_KEYS = ['online','natural','neural','network','premium','enhanced','google'];
+// Keywords masculinas para fallback
+const MALE_KEYS   = ['antonio','francisco','daniel','male','masc','homme','männlich','hombre'];
+
+function scoreVoice(v) {
+  const n = v.name.toLowerCase();
+  // Prioridade exata
+  for (let i = 0; i < VOICE_PRIORITY.length; i++) {
+    if (v.name === VOICE_PRIORITY[i]) return 1000 - i;
+  }
+  let score = 0;
+  if (!v.localService) score += 50;                      // online = melhor qualidade
+  if (NEURAL_KEYS.some(k => n.includes(k))) score += 30; // Neural
+  if (MALE_KEYS.some(k => n.includes(k)))   score += 20; // masculina
+  if (v.lang === 'pt-BR')                   score += 10; // idioma exato
+  else if (v.lang.startsWith('pt'))         score += 5;
+  return score;
+}
+
+function pickVoice() {
+  const all   = speechSynthesis.getVoices();
+  const ptVoices = all.filter(v => v.lang === 'pt-BR' || v.lang.startsWith('pt'));
+  if (!ptVoices.length) return null;
+  return ptVoices.sort((a, b) => scoreVoice(b) - scoreVoice(a))[0];
+}
+
+function initVoice() {
+  chosenVoice = pickVoice();
+  if (!chosenVoice) return;
+  voiceReady = true;
+  voiceName  = chosenVoice.name;
+
+  // Detecta se é Neural online
+  const isNeural = !chosenVoice.localService ||
+    NEURAL_KEYS.some(k => chosenVoice.name.toLowerCase().includes(k));
+
+  // Badge discreta no canto
+  const badge = document.getElementById('vbadge');
+  badge.textContent = (isNeural ? '⚡ ' : '') + chosenVoice.name.replace('Microsoft ','').replace(' Online (Natural)','').replace(' - Portuguese (Brazil)','');
+  badge.classList.add('show');
+  setTimeout(() => badge.classList.remove('show'), 4000);
+
+  // Libera botão enviar
+  document.getElementById('send').disabled = false;
+  setSt('', 'pronto');
+}
+
+// Carrega vozes — Chrome precisa do evento onvoiceschanged
+if (speechSynthesis.getVoices().length) {
+  initVoice();
+} else {
+  speechSynthesis.onvoiceschanged = () => { if (!voiceReady) initVoice(); };
+  // Timeout de segurança: se onvoiceschanged não disparar
+  setTimeout(() => { if (!voiceReady) initVoice(); }, 2000);
+}
+
+/* ══════════════════════════════════════════════════════════════
+   PARÂMETROS DE VOZ por modo
+   thinking: mais grave, lento, murmurado
+   answer:   natural, clara, ligeiramente mais rápida
+══════════════════════════════════════════════════════════════ */
+function voiceParams(mode) {
+  const isMicrosoft = voiceName.toLowerCase().includes('microsoft');
+  const isGoogle    = voiceName.toLowerCase().includes('google');
+
+  if (mode === 'thinking') {
+    return {
+      rate:   isMicrosoft ? 0.82 : 0.85,
+      pitch:  isMicrosoft ? 0.70 : 0.80,   // mais grave no thinking
+      volume: 0.80
+    };
+  } else {
+    return {
+      rate:   isMicrosoft ? 0.95 : 1.00,
+      pitch:  isMicrosoft ? 0.85 : 0.90,   // grave mas legível na resposta
+      volume: 1.00
+    };
+  }
+}
 
 /* ══════ RENDERER ══════ */
 const cv=document.getElementById('c');
@@ -302,7 +419,7 @@ const NF=`
 uniform float uT;uniform vec3 uPC[3];uniform float uE;
 varying vec3 vC;varying float vP;varying float vD;varying float vG;
 void main(){
-  vec2 c=2.*gl_PointCoord-1.;float d=length(c);if(d>1.)discard;
+  vec2 c=2.*gl_PointCoord-1.;float d=length(c);if(d>.5)discard;
   float g1=1.-smoothstep(0.,.5,d),g2=1.-smoothstep(0.,1.,d);
   float gs=pow(g1,1.15)+g2*.28;
   vec3 col=vC*(.88+.12*sin(uT*.55+vD*.22));
@@ -429,7 +546,7 @@ function setPal(key,energy=0){
   ca.needsUpdate=true;
 }
 
-/* ══════ PULSO VISUAL (disparo único) ══════ */
+/* ══════ PULSO VISUAL ══════ */
 const ray=new THREE.Raycaster(),ptr=new THREE.Vector2();
 const ip=new THREE.Plane(),ipt=new THREE.Vector3();
 let pidx=0;
@@ -450,23 +567,18 @@ function fire(x,y,col){
   });
 }
 
-/* ══════ PULSO CONTÍNUO DURANTE FALA ══════
-   Dispara pulsos aleatórios pela rede enquanto a IA está falando,
-   simulando sinapses ativas — intervalo curto e irregular.
-══════ */
+/* ══════ PULSO CONTÍNUO ══════ */
 let neuralInterval=null;
 function startNeuralFire(mode){
   stopNeuralFire();
   const pal=PAL[mode==='answer'?'answer':'thinking'];
   function burst(){
     if(!neuralInterval)return;
-    const n=1+Math.floor(Math.random()*3); // 1-3 pulsos por burst
+    const n=1+Math.floor(Math.random()*3);
     for(let i=0;i<n;i++){
-      const x=innerWidth*(0.05+Math.random()*0.9);
-      const y=innerHeight*(0.05+Math.random()*0.9);
-      fire(x,y,pal[Math.floor(Math.random()*pal.length)]);
+      fire(innerWidth*(0.05+Math.random()*0.9),innerHeight*(0.05+Math.random()*0.9),
+           pal[Math.floor(Math.random()*pal.length)]);
     }
-    // Próximo burst em 300-900ms (irregular, como sinapses)
     neuralInterval=setTimeout(burst,300+Math.random()*600);
   }
   neuralInterval=setTimeout(burst,80);
@@ -486,7 +598,7 @@ cv.addEventListener('touchend',e=>{
 const waveEl=document.getElementById('wave');
 const bars=[...waveEl.querySelectorAll('span')];
 function startWave(mode){
-  waveEl.className='on '+mode;
+  waveEl.className='on '+(mode==='answer'?'speaking':'thinking');
   bars.forEach((b,i)=>{
     const dur=(0.35+Math.random()*.55).toFixed(2);
     const delay=(i*0.048).toFixed(2);
@@ -499,66 +611,61 @@ function stopWave(){
   bars.forEach(b=>{b.style.animation='none';b.style.height='4px';});
 }
 
-/* ══════ LIMPEZA DE TEXTO (segurança no browser) ══════ */
+/* ══════ LIMPEZA DE TEXTO ══════ */
 function cleanText(txt){
   if(!txt)return'';
-  // Remove tags HTML
   txt=txt.replace(/<[^>]*>/g,'');
-  // Entidades HTML
   txt=txt.replace(/&lt;/g,'').replace(/&gt;/g,'').replace(/&amp;/g,'e')
          .replace(/&nbsp;/g,' ').replace(/&[a-zA-Z]+;/g,'');
-  // Markdown: **, __, *, _, `, ##, ~~
   txt=txt.replace(/\*\*([^*]+)\*\*/g,'$1').replace(/__([^_]+)__/g,'$1')
          .replace(/\*([^*]+)\*/g,'$1').replace(/_([^_]+)_/g,'$1')
          .replace(/`([^`]+)`/g,'$1').replace(/~~([^~]+)~~/g,'$1')
          .replace(/#{1,6}\s*/g,'');
-  // Símbolos < > soltos
   txt=txt.replace(/[<>]/g,'');
-  // URLs
   txt=txt.replace(/https?:\/\/\S+/g,'');
-  // Múltiplos espaços
   txt=txt.replace(/[ \t]{2,}/g,' ');
   return txt.trim();
 }
 
-/* ══════ WEB SPEECH TTS ══════ */
-const synth=window.speechSynthesis;
-let ttsVoice=null;
-function loadVoices(){
-  const all=synth.getVoices();
-  ttsVoice=all.find(v=>v.lang==='pt-BR')
-           ||all.find(v=>v.lang.startsWith('pt'))
-           ||all[0]||null;
-}
-loadVoices();
-if('onvoiceschanged' in speechSynthesis) speechSynthesis.onvoiceschanged=loadVoices;
+/* ══════════════════════════════════════════════
+   WEB SPEECH TTS — com voz Neural selecionada
+══════════════════════════════════════════════ */
+const synth = window.speechSynthesis;
 
-function speak(text,mode,onEnd){
-  const clean=cleanText(text);
-  if(!clean){onEnd&&onEnd();return;}
+function speak(text, mode, onEnd) {
+  const clean = cleanText(text);
+  if (!clean) { onEnd && onEnd(); return; }
+
   synth.cancel();
-  const utt=new SpeechSynthesisUtterance(clean);
-  if(ttsVoice)utt.voice=ttsVoice;
-  utt.lang='pt-BR';
-  if(mode==='thinking'){
-    utt.rate=0.87;utt.pitch=0.90;utt.volume=0.70;
-  }else{
-    utt.rate=1.02;utt.pitch=1.06;utt.volume=1.00;
-  }
-  utt.onstart=()=>{
-    startWave(mode);
-    startNeuralFire(mode); // ← inicia pulsos neurais contínuos
+
+  const utt  = new SpeechSynthesisUtterance(clean);
+  const p    = voiceParams(mode);
+
+  if (chosenVoice) utt.voice = chosenVoice;
+  utt.lang   = 'pt-BR';
+  utt.rate   = p.rate;
+  utt.pitch  = p.pitch;
+  utt.volume = p.volume;
+
+  utt.onstart = () => { startWave(mode); startNeuralFire(mode); };
+  utt.onend   = () => { stopWave(); stopNeuralFire(); onEnd && onEnd(); };
+  utt.onerror = () => { stopWave(); stopNeuralFire(); onEnd && onEnd(); };
+
+  // Chrome bug: fala para após ~15s em alguns casos — workaround
+  let resumed = false;
+  const keepAlive = setInterval(() => {
+    if (!synth.speaking) { clearInterval(keepAlive); return; }
+    if (synth.paused) { synth.resume(); resumed = true; }
+  }, 5000);
+  utt.onend = () => {
+    clearInterval(keepAlive);
+    stopWave(); stopNeuralFire(); onEnd && onEnd();
   };
-  utt.onend=()=>{
-    stopWave();
-    stopNeuralFire();      // ← para pulsos ao terminar
-    onEnd&&onEnd();
+  utt.onerror = () => {
+    clearInterval(keepAlive);
+    stopWave(); stopNeuralFire(); onEnd && onEnd();
   };
-  utt.onerror=()=>{
-    stopWave();
-    stopNeuralFire();
-    onEnd&&onEnd();
-  };
+
   synth.speak(utt);
 }
 
@@ -577,31 +684,27 @@ function nextItem(){
   if(!spkActive||spkIdx>=spkQueue.length){finishAll();return;}
   const item=spkQueue[spkIdx++];
 
-  // Sentinela: troca paleta sem falar
   if(item.type==='__switch__'){
     setPal('answer',.45);
     setSt('speaking','respondendo…');
-    setTimeout(nextItem,200);
+    setTimeout(nextItem,180);
     return;
   }
 
   const mode=item.type==='answer'?'answer':'thinking';
-
-  // Legenda (primeiras 9 palavras)
-  const words=item.text.split(' ');
+  const words=(item.text||'').split(' ');
   plbl.textContent=words.slice(0,9).join(' ')+(words.length>9?'…':'');
   plbl.classList.add('show');
 
-  speak(item.text,mode,()=>{
+  speak(item.text, mode, ()=>{
     plbl.classList.remove('show');
-    setTimeout(nextItem,mode==='thinking'?130:220);
+    setTimeout(nextItem, mode==='thinking' ? 120 : 200);
   });
 }
 
 function finishAll(){
   spkActive=false;
-  stopWave();
-  stopNeuralFire();
+  stopWave(); stopNeuralFire();
   plbl.classList.remove('show');
   setPal('idle',0);
   setSt('done',(currentTok||'?')+' tokens');
@@ -611,8 +714,7 @@ function finishAll(){
 function stopAll(){
   spkActive=false;
   synth.cancel();
-  stopWave();
-  stopNeuralFire();
+  stopWave(); stopNeuralFire();
   plbl.classList.remove('show');
   setPal('idle',0);
   setSt('','pronto');
@@ -637,7 +739,7 @@ resize();window.addEventListener('resize',resize);
 })();
 buildMeshes(PAL.idle);
 
-/* ══════ UI REFS ══════ */
+/* ══════ UI ══════ */
 const dot    =document.getElementById('dot');
 const stxt   =document.getElementById('stxt');
 const qEl    =document.getElementById('q');
@@ -660,11 +762,9 @@ async function ask(msg){
   const answer  =cleanText((d.answer  ||'').trim());
   let pulses=Array.isArray(d.pulses)?d.pulses:[];
 
-  // Limpa texto de cada pulso também
   pulses=pulses.map(p=>({...p,text:cleanText(p.text)}))
                .filter(p=>p.text.length>3);
 
-  // Fallback: constrói pulsos de raciocínio no browser se não vieram
   if(!pulses.some(p=>p.type==='thinking')&&thinking){
     const sents=thinking.split(/[.!?]+\s+/).map(s=>s.trim()).filter(s=>s.length>8);
     for(let i=0;i<sents.length;i+=3)
@@ -680,16 +780,16 @@ async function ask(msg){
 async function send(){
   const q=qEl.value.trim();if(!q)return;
   stopAll();
+  qEl.value='';
+  qEl.style.height='auto';
   sendBtn.disabled=true;
   setSt('thinking','pensando…');
   setPal('thinking',1);
-
-  // Pulsos neurais imediatos enquanto espera a API
   startNeuralFire('thinking');
 
   try{
     const{pulses,tok}=await ask(q);
-    stopNeuralFire(); // para os pulsos de espera
+    stopNeuralFire();
 
     if(!pulses.length){
       setSt('error','sem resposta');
